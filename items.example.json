@@ -1,0 +1,34 @@
+{
+    "version": 1,
+    "settings": {
+        "launch_at_login": false,
+        "show_window_on_startup": true,
+        "close_to_tray": true,
+        "global_hotkey_enabled": true,
+        "global_hotkey": "Ctrl + Alt + Space"
+    },
+    "items": [
+        {
+            "id": "sample-docs",
+            "name": "Documents",
+            "kind": "folder",
+            "target": "C:\\Users\\m1506\\Documents",
+            "category": "本地目录",
+            "tags": ["常用"],
+            "username": "",
+            "favorite": true,
+            "notes": "示例目录"
+        },
+        {
+            "id": "sample-rust",
+            "name": "Rust 官网",
+            "kind": "url",
+            "target": "https://www.rust-lang.org",
+            "category": "开发",
+            "tags": ["外网", "文档"],
+            "username": "",
+            "favorite": false,
+            "notes": "示例网址"
+        }
+    ]
+}

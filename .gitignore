@@ -1,0 +1,9 @@
+# Generated build output and local app data.
+/target/
+/items.json
+/.superpowers/
+
+# Local dependency checkout and worktree scratch space.
+/work/
+/.worktrees/
+
