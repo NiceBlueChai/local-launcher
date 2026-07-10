@@ -1,5 +1,6 @@
 # Generated build output and local app data.
 /target/
+/dist/
 /items.json
 /.superpowers/
 
