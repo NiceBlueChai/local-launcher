@@ -2,11 +2,10 @@
 
 use crate::model::{ItemKind, LauncherItem};
 use std::path::Path;
-use windows::Win32::UI::Shell::{
-    ILCreateFromPathW, ILFree, SHOpenFolderAndSelectItems, ShellExecuteW,
-};
-use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 use windows::core::PCWSTR;
+use windows::Win32::shellapi::ShellExecuteW;
+use windows::Win32::shlobj_core::{ILCreateFromPathW, ILFree, SHOpenFolderAndSelectItems};
+use windows::Win32::winuser::SW_SHOWNORMAL;
 
 /// Opens a launcher item with the appropriate Windows mechanism.
 pub fn open_item(item: &LauncherItem) -> Result<(), String> {
@@ -110,7 +109,7 @@ fn select_in_folder(target: &str) -> Result<(), String> {
         ILFree(Some(pidl));
         result
     };
-    result.map_err(|error| format!("选中文件失败: {error:?}"))
+    result.ok().map_err(|error| format!("选中文件失败: {error:?}"))
 }
 
 fn shell_open(
@@ -143,13 +142,11 @@ fn shell_open(
             SW_SHOWNORMAL,
         )
     };
-    if result.0 as usize > 32 {
+    let outcome = result as isize;
+    if outcome > 32 {
         Ok(())
     } else {
-        Err(format!(
-            "{error_prefix}: ShellExecuteW 错误 {}",
-            result.0 as usize
-        ))
+        Err(format!("{error_prefix}: ShellExecuteW 错误 {outcome}"))
     }
 }
 

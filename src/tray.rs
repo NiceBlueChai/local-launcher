@@ -5,40 +5,43 @@ use std::mem::size_of;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::thread;
 use std::time::Duration;
-use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM};
-use windows::Win32::System::Com::{
-    CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
-};
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::System::Variant::VARIANT;
-use windows::Win32::UI::Accessibility::{
-    CUIAutomation, IUIAutomation, TreeScope_Descendants, UIA_ControlTypePropertyId,
-    UIA_EditControlTypeId,
-};
-use windows::Win32::UI::Input::KeyboardAndMouse::{
-    HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, RegisterHotKey, UnregisterHotKey,
-    VK_SPACE,
-};
-use windows::Win32::UI::Shell::{
+use windows::core::{BOOL, PCWSTR};
+use windows::Win32::combaseapi::{CoCreateInstance, CoInitializeEx};
+use windows::Win32::libloaderapi::GetModuleHandleW;
+use windows::Win32::minwindef::{LPARAM, WPARAM};
+use windows::Win32::oaidl::VARIANT;
+use windows::Win32::objbase::COINIT_APARTMENTTHREADED;
+use windows::Win32::shellapi::{
     NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, Shell_NotifyIconW,
 };
-use windows::Win32::UI::WindowsAndMessaging::{
+use windows::Win32::uiautomationclient::{CUIAutomation, IUIAutomation, TreeScope_Descendants};
+use windows::Win32::windef::{HICON, HWND, POINT};
+use windows::Win32::winnt::HANDLE;
+use windows::Win32::winuser::{
     AppendMenuW, CallWindowProcW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu,
     DestroyWindow, DispatchMessageW, EnumWindows, GCLP_HICON, GCLP_HICONSM, GWLP_WNDPROC,
-    GetCursorPos, GetMessageW, GetWindowThreadProcessId, HICON, ICON_BIG, ICON_SMALL,
-    IDI_APPLICATION, IMAGE_ICON, IsWindowVisible, LR_SHARED, LoadIconW, LoadImageW, MF_SEPARATOR,
-    MF_STRING, MSG, PostMessageW, PostQuitMessage, RegisterClassW, SW_HIDE, SW_RESTORE,
-    SendMessageW, SetClassLongPtrW, SetForegroundWindow, SetWindowLongPtrW, ShowWindow,
-    TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP,
-    WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_HOTKEY, WM_LBUTTONDBLCLK, WM_RBUTTONUP, WM_SETICON,
-    WNDCLASSW,
+    GetCursorPos, GetMessageW, GetWindowThreadProcessId, ICON_BIG, ICON_SMALL, IDI_APPLICATION,
+    IMAGE_ICON, IsWindowVisible, LR_SHARED, LoadIconW, LoadImageW, MF_SEPARATOR, MF_STRING, MSG,
+    MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, PostMessageW, PostQuitMessage, RegisterClassW,
+    RegisterHotKey, SendMessageW, SetClassLongPtrW, SetForegroundWindow, SetWindowLongPtrW,
+    ShowWindow, SW_HIDE, SW_RESTORE, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage,
+    UnregisterHotKey, VK_SPACE, WM_APP, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_HOTKEY,
+    WM_LBUTTONDBLCLK, WM_RBUTTONUP, WM_SETICON, WNDCLASSW,
 };
-use windows::core::{BOOL, PCWSTR};
+use windows::Win32::wtypes::VT_I4;
+use windows::Win32::wtypesbase::CLSCTX_INPROC_SERVER;
+
+/// windows 0.100 no longer generates the UI Automation property and control-type identifiers.
+const UIA_CONTROL_TYPE_PROPERTY_ID: i32 = 30003;
+const UIA_EDIT_CONTROL_TYPE_ID: i32 = 50004;
+
+/// `IDI_APPLICATION` is published as `PCSTR`, but resource identifiers are plain ordinals.
+const IDI_APPLICATION_W: PCWSTR = PCWSTR::from_raw(IDI_APPLICATION.0 as *const u16);
 
 const TRAY_ID: u32 = 1;
 const APP_ICON_RESOURCE_ID: usize = 1;
-const TRAY_CALLBACK: u32 = WM_APP + 1;
-const TRAY_CONFIGURE: u32 = WM_APP + 2;
+const TRAY_CALLBACK: i32 = WM_APP + 1;
+const TRAY_CONFIGURE: i32 = WM_APP + 2;
 const HOTKEY_ID: i32 = 1;
 const MENU_SHOW: usize = 1001;
 const MENU_EXIT: usize = 1002;
@@ -76,17 +79,17 @@ pub fn configure(settings: LauncherSettings) -> Result<(), String> {
     let hwnd = TRAY_HWND.load(Ordering::SeqCst);
     store_settings(settings);
     if hwnd != 0 {
-        let hwnd = HWND(hwnd as _);
+        let hwnd = hwnd as HWND;
         clear_configure_error();
         unsafe {
-            let _ = SendMessageW(hwnd, TRAY_CONFIGURE, None, None);
+            let _ = SendMessageW(hwnd, TRAY_CONFIGURE as u32, 0, 0);
         }
         if let Some(error) = take_configure_error() {
             if let Some(previous) = previous {
                 store_settings(previous);
                 clear_configure_error();
                 unsafe {
-                    let _ = SendMessageW(hwnd, TRAY_CONFIGURE, None, None);
+                    let _ = SendMessageW(hwnd, TRAY_CONFIGURE as u32, 0, 0);
                 }
             }
             return Err(error);
@@ -129,12 +132,12 @@ fn take_configure_error() -> Option<String> {
 
 fn run_tray(window_title: String, settings: LauncherSettings) -> Result<(), String> {
     unsafe {
-        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED as u32);
     }
     let class_name = wide_null("LocalLauncherTrayWindow");
     register_tray_window_class(&class_name)?;
     let hwnd = create_tray_window(&class_name)?;
-    TRAY_HWND.store(hwnd.0 as isize, Ordering::SeqCst);
+    TRAY_HWND.store(hwnd as isize, Ordering::SeqCst);
     add_tray_icon(hwnd)?;
     if let Err(error) = apply_hotkey_settings(hwnd, &settings) {
         eprintln!("hotkey settings failed: {error}");
@@ -150,7 +153,7 @@ fn register_tray_window_class(class_name: &[u16]) -> Result<(), String> {
         lpszClassName: PCWSTR(class_name.as_ptr()),
         ..Default::default()
     };
-    let atom = unsafe { RegisterClassW(&class) };
+    let atom = unsafe { RegisterClassW(&raw const class) };
     if atom == 0 {
         Err("注册托盘消息窗口失败".to_string())
     } else {
@@ -160,12 +163,12 @@ fn register_tray_window_class(class_name: &[u16]) -> Result<(), String> {
 
 fn create_tray_window(class_name: &[u16]) -> Result<HWND, String> {
     let title = wide_null("Local Launcher Tray");
-    unsafe {
+    let hwnd = unsafe {
         CreateWindowExW(
-            WINDOW_EX_STYLE(0),
+            0,
             PCWSTR(class_name.as_ptr()),
             PCWSTR(title.as_ptr()),
-            WINDOW_STYLE(0),
+            0,
             0,
             0,
             0,
@@ -175,40 +178,52 @@ fn create_tray_window(class_name: &[u16]) -> Result<HWND, String> {
             None,
             None,
         )
-        .map_err(|error| format!("创建托盘消息窗口失败: {error:?}"))
+    };
+
+    if hwnd.is_null() {
+        Err("创建托盘消息窗口失败".to_string())
+    } else {
+        Ok(hwnd)
     }
 }
 
 fn add_tray_icon(hwnd: HWND) -> Result<(), String> {
-    let icon = load_app_icon().map_err(|error| format!("加载托盘图标失败: {error:?}"))?;
+    let icon = load_app_icon()?;
     let mut data = notify_icon_data(hwnd);
-    data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
-    data.uCallbackMessage = TRAY_CALLBACK;
+    data.uFlags = (NIF_MESSAGE | NIF_ICON | NIF_TIP) as u32;
+    data.uCallbackMessage = TRAY_CALLBACK as u32;
     data.hIcon = icon;
     copy_wide(&mut data.szTip, "Local Launcher");
 
-    if unsafe { Shell_NotifyIconW(NIM_ADD, &data).as_bool() } {
+    if unsafe { Shell_NotifyIconW(NIM_ADD as u32, &raw mut data).as_bool() } {
         Ok(())
     } else {
         Err("添加托盘图标失败".to_string())
     }
 }
 
-fn load_app_icon() -> windows::core::Result<windows::Win32::UI::WindowsAndMessaging::HICON> {
+fn load_app_icon() -> Result<HICON, String> {
     let resource = PCWSTR(APP_ICON_RESOURCE_ID as _);
-    if let Ok(module) = unsafe { GetModuleHandleW(PCWSTR::null()) } {
-        if let Ok(icon) = unsafe { LoadIconW(Some(HINSTANCE(module.0)), resource) } {
+    let module = unsafe { GetModuleHandleW(PCWSTR::null()) };
+    if !module.is_null() {
+        let icon = unsafe { LoadIconW(Some(module.cast()), resource) };
+        if !icon.is_null() {
             return Ok(icon);
         }
     }
 
-    unsafe { LoadIconW(None, IDI_APPLICATION) }
+    let fallback = unsafe { LoadIconW(None, IDI_APPLICATION_W) };
+    if fallback.is_null() {
+        return Err("加载托盘图标失败".to_string());
+    }
+
+    Ok(fallback)
 }
 
 fn remove_tray_icon(hwnd: HWND) {
-    let data = notify_icon_data(hwnd);
+    let mut data = notify_icon_data(hwnd);
     unsafe {
-        let _ = Shell_NotifyIconW(NIM_DELETE, &data);
+        let _ = Shell_NotifyIconW(NIM_DELETE as u32, &raw mut data);
     }
 }
 
@@ -232,7 +247,7 @@ fn spawn_main_window_hook(_window_title: String) {
 fn hook_main_window() {
     for _ in 0..HOOK_ATTEMPTS {
         if let Some(hwnd) = find_main_window() {
-            MAIN_HWND.store(hwnd.0 as isize, Ordering::SeqCst);
+            MAIN_HWND.store(hwnd as isize, Ordering::SeqCst);
             set_main_window_icons(hwnd);
             install_close_hook(hwnd);
             if !SHOW_ON_STARTUP.load(Ordering::SeqCst) {
@@ -252,9 +267,9 @@ fn find_main_window() -> Option<HWND> {
         hwnd: HWND::default(),
     };
     let state_ptr = &mut state as *mut FindMainWindowState;
-    let _ = unsafe { EnumWindows(Some(enum_main_window), LPARAM(state_ptr as isize)) };
+    let _ = unsafe { EnumWindows(Some(enum_main_window), state_ptr as LPARAM) };
 
-    if state.hwnd.0.is_null() {
+    if state.hwnd.is_null() {
         None
     } else {
         Some(state.hwnd)
@@ -267,10 +282,10 @@ struct FindMainWindowState {
 }
 
 unsafe extern "system" fn enum_main_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
-    let state = unsafe { &mut *(lparam.0 as *mut FindMainWindowState) };
+    let state = unsafe { &mut *(lparam as *mut FindMainWindowState) };
     let mut process_id = 0;
     unsafe {
-        GetWindowThreadProcessId(hwnd, Some(&mut process_id));
+        GetWindowThreadProcessId(hwnd, Some(&raw mut process_id));
     }
     if process_id == state.process_id && unsafe { IsWindowVisible(hwnd).as_bool() } {
         state.hwnd = hwnd;
@@ -281,7 +296,7 @@ unsafe extern "system" fn enum_main_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
 }
 
 fn install_close_hook(hwnd: HWND) {
-    let wnd_proc = main_wnd_proc as *const () as usize as isize;
+    let wnd_proc = main_wnd_proc as *const () as isize;
     let previous = unsafe { SetWindowLongPtrW(hwnd, GWLP_WNDPROC, wnd_proc) };
     if previous != 0 {
         ORIGINAL_WNDPROC.store(previous, Ordering::SeqCst);
@@ -291,52 +306,48 @@ fn install_close_hook(hwnd: HWND) {
 fn set_main_window_icons(hwnd: HWND) {
     if let Some(icon) = load_sized_app_icon(32, 32) {
         unsafe {
-            let _ = SendMessageW(
-                hwnd,
-                WM_SETICON,
-                Some(WPARAM(ICON_BIG as usize)),
-                Some(LPARAM(icon.0 as isize)),
-            );
-            let _ = SetClassLongPtrW(hwnd, GCLP_HICON, icon.0 as isize);
+            let _ = SendMessageW(hwnd, WM_SETICON as u32, ICON_BIG as WPARAM, icon as LPARAM);
+            let _ = SetClassLongPtrW(hwnd, GCLP_HICON, icon as isize);
         }
     }
     if let Some(icon) = load_sized_app_icon(16, 16) {
         unsafe {
-            let _ = SendMessageW(
-                hwnd,
-                WM_SETICON,
-                Some(WPARAM(ICON_SMALL as usize)),
-                Some(LPARAM(icon.0 as isize)),
-            );
-            let _ = SetClassLongPtrW(hwnd, GCLP_HICONSM, icon.0 as isize);
+            let _ = SendMessageW(hwnd, WM_SETICON as u32, ICON_SMALL as WPARAM, icon as LPARAM);
+            let _ = SetClassLongPtrW(hwnd, GCLP_HICONSM, icon as isize);
         }
     }
 }
 
 fn load_sized_app_icon(width: i32, height: i32) -> Option<HICON> {
-    let module = unsafe { GetModuleHandleW(PCWSTR::null()) }.ok()?;
+    let module = unsafe { GetModuleHandleW(PCWSTR::null()) };
+    if module.is_null() {
+        return None;
+    }
     let resource = PCWSTR(APP_ICON_RESOURCE_ID as _);
-    let handle = unsafe {
+    let handle: HANDLE = unsafe {
         LoadImageW(
-            Some(HINSTANCE(module.0)),
+            Some(module.cast()),
             resource,
-            IMAGE_ICON,
+            IMAGE_ICON as u32,
             width,
             height,
-            LR_SHARED,
+            LR_SHARED as u32,
         )
-    }
-    .ok()?;
+    };
 
-    Some(HICON(handle.0))
+    if handle.is_null() {
+        None
+    } else {
+        Some(handle as HICON)
+    }
 }
 
 fn run_message_loop() {
     let mut message = MSG::default();
-    while unsafe { GetMessageW(&mut message, None, 0, 0).as_bool() } {
+    while unsafe { GetMessageW(&raw mut message, None, 0, 0).as_bool() } {
         unsafe {
-            let _ = TranslateMessage(&message);
-            DispatchMessageW(&message);
+            let _ = TranslateMessage(&raw const message);
+            let _ = DispatchMessageW(&raw const message);
         }
     }
 }
@@ -346,31 +357,32 @@ unsafe extern "system" fn tray_wnd_proc(
     message: u32,
     wparam: WPARAM,
     lparam: LPARAM,
-) -> LRESULT {
+) -> isize {
+    // windows 0.100 publishes the message identifiers as `i32` while window procedures receive `u32`.
     match message {
-        TRAY_CALLBACK => {
-            handle_tray_event(hwnd, lparam.0 as u32);
-            LRESULT(0)
+        value if value == TRAY_CALLBACK as u32 => {
+            handle_tray_event(hwnd, lparam);
+            0
         }
-        WM_COMMAND => {
-            handle_menu_command(hwnd, wparam.0 & 0xffff);
-            LRESULT(0)
+        value if value == WM_COMMAND as u32 => {
+            handle_menu_command(hwnd, wparam & 0xffff);
+            0
         }
-        TRAY_CONFIGURE => {
+        value if value == TRAY_CONFIGURE as u32 => {
             apply_pending_settings(hwnd);
-            LRESULT(0)
+            0
         }
-        WM_HOTKEY => {
+        value if value == WM_HOTKEY as u32 => {
             show_or_hide_main_window();
-            LRESULT(0)
+            0
         }
-        WM_DESTROY => {
+        value if value == WM_DESTROY as u32 => {
             unregister_hotkey(hwnd);
             remove_tray_icon(hwnd);
             unsafe {
                 PostQuitMessage(0);
             }
-            LRESULT(0)
+            0
         }
         _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
     }
@@ -381,22 +393,22 @@ unsafe extern "system" fn main_wnd_proc(
     message: u32,
     wparam: WPARAM,
     lparam: LPARAM,
-) -> LRESULT {
-    if message == WM_CLOSE
+) -> isize {
+    if message == WM_CLOSE as u32
         && CLOSE_TO_TRAY.load(Ordering::SeqCst)
         && !EXITING.load(Ordering::SeqCst)
     {
         unsafe {
             let _ = ShowWindow(hwnd, SW_HIDE);
         }
-        return LRESULT(0);
+        return 0;
     }
 
     call_original_window_proc(hwnd, message, wparam, lparam)
 }
 
-fn handle_tray_event(hwnd: HWND, event: u32) {
-    match event {
+fn handle_tray_event(hwnd: HWND, event: LPARAM) {
+    match event as i32 {
         WM_LBUTTONDBLCLK => show_main_window(),
         WM_RBUTTONUP => show_tray_menu(hwnd),
         _ => {}
@@ -412,20 +424,28 @@ fn handle_menu_command(hwnd: HWND, command: usize) {
 }
 
 fn show_tray_menu(hwnd: HWND) {
-    let menu = match unsafe { CreatePopupMenu() } {
-        Ok(menu) => menu,
-        Err(_) => return,
-    };
+    let menu = unsafe { CreatePopupMenu() };
+    if menu.is_null() {
+        return;
+    }
     let show = wide_null("显示窗口");
     let exit = wide_null("退出");
     let mut point = POINT::default();
     unsafe {
-        let _ = AppendMenuW(menu, MF_STRING, MENU_SHOW, PCWSTR(show.as_ptr()));
-        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-        let _ = AppendMenuW(menu, MF_STRING, MENU_EXIT, PCWSTR(exit.as_ptr()));
-        if GetCursorPos(&mut point).is_ok() {
+        let _ = AppendMenuW(menu, MF_STRING as u32, MENU_SHOW, PCWSTR(show.as_ptr()));
+        let _ = AppendMenuW(menu, MF_SEPARATOR as u32, 0, PCWSTR::null());
+        let _ = AppendMenuW(menu, MF_STRING as u32, MENU_EXIT, PCWSTR(exit.as_ptr()));
+        if GetCursorPos(&raw mut point).as_bool() {
             let _ = SetForegroundWindow(hwnd);
-            let _ = TrackPopupMenu(menu, TPM_RIGHTBUTTON, point.x, point.y, None, hwnd, None);
+            let _ = TrackPopupMenu(
+                menu,
+                TPM_RIGHTBUTTON as u32,
+                point.x,
+                point.y,
+                None,
+                hwnd,
+                None,
+            );
         }
         let _ = DestroyMenu(menu);
     }
@@ -461,16 +481,30 @@ fn focus_search_box(hwnd: HWND) {
     }
 }
 
-fn focus_first_edit_control(hwnd: HWND) -> windows::core::Result<()> {
+fn focus_first_edit_control(hwnd: HWND) -> Result<(), String> {
     let automation: IUIAutomation =
-        unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)? };
-    let root = unsafe { automation.ElementFromHandle(hwnd)? };
-    let edit_type = VARIANT::from(UIA_EditControlTypeId.0);
-    let edit_condition =
-        unsafe { automation.CreatePropertyCondition(UIA_ControlTypePropertyId, &edit_type)? };
-    let search_box = unsafe { root.FindFirst(TreeScope_Descendants, &edit_condition)? };
+        unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER) }.map_err(describe)?;
+    let root = unsafe { automation.ElementFromHandle(hwnd.cast()) }.map_err(describe)?;
+    let edit_type = edit_type_variant();
+    let edit_condition = unsafe {
+        automation.CreatePropertyCondition(UIA_CONTROL_TYPE_PROPERTY_ID, &edit_type)
+    }
+    .map_err(describe)?;
+    let search_box =
+        unsafe { root.FindFirst(TreeScope_Descendants, &edit_condition) }.map_err(describe)?;
 
-    unsafe { search_box.SetFocus() }
+    unsafe { search_box.SetFocus() }.ok().map_err(describe)
+}
+
+fn edit_type_variant() -> VARIANT {
+    let mut value = VARIANT::default();
+    unsafe {
+        let typed = &mut *value.Anonymous.Anonymous;
+        typed.vt = VT_I4 as u16;
+        typed.Anonymous.lVal = UIA_EDIT_CONTROL_TYPE_ID;
+    }
+
+    value
 }
 
 fn apply_pending_settings(hwnd: HWND) {
@@ -490,7 +524,8 @@ fn apply_hotkey_settings(hwnd: HWND, settings: &LauncherSettings) -> Result<(), 
     }
     let (modifiers, key) = parse_hotkey(&settings.global_hotkey)?;
     unsafe {
-        RegisterHotKey(Some(hwnd), HOTKEY_ID, modifiers | MOD_NOREPEAT, key)
+        RegisterHotKey(Some(hwnd), HOTKEY_ID, modifiers | MOD_NOREPEAT as u32, key)
+            .ok()
             .map_err(|error| format!("注册全局快捷键失败: {}", error.message()))?;
     }
     HOTKEY_REGISTERED.store(true, Ordering::SeqCst);
@@ -505,18 +540,22 @@ fn unregister_hotkey(hwnd: HWND) {
     }
 }
 
-fn parse_hotkey(value: &str) -> Result<(HOT_KEY_MODIFIERS, u32), String> {
+fn parse_hotkey(value: &str) -> Result<(u32, u32), String> {
     if value.trim().eq_ignore_ascii_case("Ctrl + Alt + Space") {
-        return Ok((MOD_CONTROL | MOD_ALT, VK_SPACE.0 as u32));
+        return Ok(((MOD_CONTROL | MOD_ALT) as u32, virtual_key(VK_SPACE)));
     }
     Err(format!("暂只支持快捷键 Ctrl + Alt + Space: {value}"))
+}
+
+const fn virtual_key(value: i32) -> u32 {
+    value as u32
 }
 
 fn exit_app(tray_hwnd: HWND) {
     EXITING.store(true, Ordering::SeqCst);
     if let Some(hwnd) = main_window() {
         unsafe {
-            let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
+            let _ = PostMessageW(Some(hwnd), WM_CLOSE as u32, 0, 0);
         }
     } else {
         std::process::exit(0);
@@ -531,21 +570,25 @@ fn main_window() -> Option<HWND> {
     if value == 0 {
         None
     } else {
-        Some(HWND(value as _))
+        Some(value as HWND)
     }
 }
 
-fn call_original_window_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+fn call_original_window_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> isize {
     let previous = ORIGINAL_WNDPROC.load(Ordering::SeqCst);
     if previous == 0 {
         return unsafe { DefWindowProcW(hwnd, message, wparam, lparam) };
     }
 
     unsafe {
-        let proc: unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT =
+        let proc: unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> isize =
             std::mem::transmute(previous);
         CallWindowProcW(Some(proc), hwnd, message, wparam, lparam)
     }
+}
+
+fn describe(error: impl core::fmt::Debug) -> String {
+    format!("{error:?}")
 }
 
 fn copy_wide(target: &mut [u16], value: &str) {
@@ -628,15 +671,15 @@ mod tests {
         assert!(show_main.contains("focus_search_box(hwnd)"));
         assert!(show_or_hide.contains("focus_search_box(hwnd)"));
         assert!(source.contains("CUIAutomation"));
-        assert!(source.contains("UIA_EditControlTypeId"));
+        assert!(source.contains("UIA_EDIT_CONTROL_TYPE_ID"));
     }
 
     #[test]
     fn parse_hotkey_accepts_ctrl_alt_space_only() {
         let (modifiers, key) = parse_hotkey("  cTrL + aLt + sPaCe  ").unwrap();
 
-        assert_eq!(modifiers.0, (MOD_CONTROL | MOD_ALT).0);
-        assert_eq!(key, VK_SPACE.0 as u32);
+        assert_eq!(modifiers, (MOD_CONTROL | MOD_ALT) as u32);
+        assert_eq!(key, virtual_key(VK_SPACE));
         assert!(parse_hotkey("Ctrl + Shift + Space").is_err());
     }
 }

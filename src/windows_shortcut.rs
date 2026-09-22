@@ -5,15 +5,17 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::APP_ICON_PATH;
-use windows::Win32::System::Com::{
-    COINIT_APARTMENTTHREADED, CoInitializeEx, CoTaskMemFree, CoUninitialize, IPersistFile,
-};
-use windows::Win32::UI::Shell::{
-    FOLDERID_Desktop, FOLDERID_Startup, IShellLinkW, KF_FLAG_DEFAULT, SHCoCreateInstance,
-    SHGetKnownFolderPath, ShellLink,
-};
-use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 use windows::core::{Interface, PCWSTR};
+use windows::Win32::combaseapi::{
+    CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize,
+};
+use windows::Win32::knownfolders::{FOLDERID_Desktop, FOLDERID_Startup};
+use windows::Win32::objbase::COINIT_APARTMENTTHREADED;
+use windows::Win32::objidl::IPersistFile;
+use windows::Win32::shlobj_core::{KF_FLAG_DEFAULT, SHGetKnownFolderPath};
+use windows::Win32::shobjidl_core::{IShellLinkW, ShellLink};
+use windows::Win32::winuser::SW_SHOWNORMAL;
+use windows::Win32::wtypesbase::CLSCTX_INPROC_SERVER;
 
 #[cfg(windows)]
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
@@ -28,7 +30,7 @@ struct ComApartment;
 impl ComApartment {
     fn initialize() -> Result<Self, String> {
         unsafe {
-            CoInitializeEx(None, COINIT_APARTMENTTHREADED)
+            CoInitializeEx(None, COINIT_APARTMENTTHREADED as u32)
                 .ok()
                 .map_err(|error| format!("initialize COM apartment: {error}"))?;
         }
@@ -91,22 +93,27 @@ fn create_shortcut(folder: KnownShortcutFolder) -> Result<(), String> {
     let shortcut = wide_null(shortcut.as_os_str());
 
     unsafe {
-        let link: IShellLinkW = SHCoCreateInstance(PCWSTR::null(), Some(&ShellLink), None)
+        let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)
             .map_err(|error| format!("create ShellLink instance: {error}"))?;
 
         link.SetPath(PCWSTR(executable.as_ptr()))
+            .ok()
             .map_err(|error| format!("set shortcut target: {error}"))?;
         link.SetWorkingDirectory(PCWSTR(working_directory.as_ptr()))
+            .ok()
             .map_err(|error| format!("set shortcut working directory: {error}"))?;
         link.SetIconLocation(PCWSTR(icon.as_ptr()), 0)
+            .ok()
             .map_err(|error| format!("set shortcut icon: {error}"))?;
         link.SetShowCmd(SW_SHOWNORMAL)
+            .ok()
             .map_err(|error| format!("set shortcut show command: {error}"))?;
 
         let file: IPersistFile = link
             .cast()
             .map_err(|error| format!("open shortcut persistence: {error}"))?;
-        file.Save(PCWSTR(shortcut.as_ptr()), true)
+        file.Save(shortcut.as_ptr(), true)
+            .ok()
             .map_err(|error| format!("save shortcut: {error}"))?;
     }
 
@@ -137,7 +144,7 @@ fn known_folder_path(folder: KnownShortcutFolder) -> Result<PathBuf, String> {
         let path = SHGetKnownFolderPath(folder_id, KF_FLAG_DEFAULT, None)
             .map_err(|error| format!("resolve known folder: {error}"))?;
         let result = PathBuf::from(OsString::from_wide(path.as_wide()));
-        CoTaskMemFree(Some(path.as_ptr().cast()));
+        CoTaskMemFree(path.as_ptr().cast());
         Ok(result)
     }
 }

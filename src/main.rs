@@ -4,6 +4,7 @@
 
 mod credential;
 mod data_store;
+mod http;
 mod icon_data;
 mod launcher;
 mod model;
@@ -14,29 +15,23 @@ mod tray;
 mod ui;
 mod windows_shortcut;
 
-const APP_ICON_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "\\assets\\app-icon.ico");
+pub(crate) const APP_ICON_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "\\assets\\app-icon.ico");
 
-fn main() -> windows_reactor::Result<()> {
-    let initial_config = data_store::load_or_empty(std::path::Path::new("items.json"))
+fn main() -> windows::core::Result<()> {
+    let initial_config = data_store::load_or_empty(std::path::Path::new(ui::CONFIG_FILE))
         .unwrap_or_else(|_| model::LauncherConfig::empty());
-    tray::install("Local Launcher", initial_config.settings.clone());
-    windows_reactor::App::new()
-        .title("Local Launcher")
-        .icon_path(APP_ICON_PATH)
-        .inner_size(980.0, 680.0)
-        .render(ui::app)
+    tray::install(ui::WINDOW_TITLE, initial_config.settings.clone());
+    windows_reactor::App::run_component::<ui::Launcher>(initial_config)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     #[test]
     fn tray_is_installed_before_app_run() {
         let source = include_str!("main.rs");
 
         assert!(source.contains("mod tray;"));
-        assert!(source.contains("tray::install(\"Local Launcher\","));
+        assert!(source.contains("tray::install(ui::WINDOW_TITLE,"));
     }
 
     #[test]
@@ -44,21 +39,19 @@ mod tests {
         let source = include_str!("main.rs");
 
         assert!(source.contains("initial_config.settings.clone()"));
-        assert!(source.contains("tray::install(\"Local Launcher\","));
+        assert!(source.contains("tray::install(ui::WINDOW_TITLE,"));
     }
 
     #[test]
     fn app_icon_assets_are_wired() {
-        assert!(Path::new("assets/app-icon.ico").exists());
-        assert!(Path::new("assets/app.rc").exists());
+        assert!(std::path::Path::new("assets/app-icon.ico").exists());
+        assert!(std::path::Path::new("assets/app.rc").exists());
     }
 
     #[test]
-    fn winui_app_receives_icon_path() {
+    fn launcher_component_receives_initial_config() {
         let source = include_str!("main.rs");
-        let icon_path_call = concat!(".icon", "_path(APP_ICON_PATH)");
 
-        assert!(source.contains("APP_ICON_PATH"));
-        assert!(source.contains(icon_path_call));
+        assert!(source.contains("App::run_component::<ui::Launcher>(initial_config)"));
     }
 }

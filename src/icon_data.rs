@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const TEMP_DIR: &str = "windows-reactor-launcher-runtime-icons";
+const MAX_ICON_BYTES: usize = 512 * 1024;
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -29,26 +30,15 @@ pub fn icon_uri(item: &LauncherItem) -> Option<String> {
 }
 
 /// Downloads the URL origin favicon and returns base64 data for JSON storage.
-pub fn fetch_url_icon(kind: &ItemKind, url: &str) -> Result<IconPayload, String> {
-    if !(url.starts_with("http://") || url.starts_with("https://")) {
-        return Err("URL 必须以 http:// 或 https:// 开头".to_string());
-    }
+pub fn fetch_url_icon(url: &str) -> Result<IconPayload, String> {
+    let Some(bytes) = crate::http::favicon(url, MAX_ICON_BYTES)? else {
+        return Err("站点没有 favicon.ico".to_string());
+    };
 
-    let path = runtime_download_path(kind, url);
-    ensure_temp_dir()?;
-    let icon_path = path_string(&path);
-    let script = r#"
-$ErrorActionPreference = 'Stop'
-$uri = [System.Uri]$env:LAUNCHER_URL
-$favicon = $uri.Scheme + '://' + $uri.Authority + '/favicon.ico'
-Invoke-WebRequest -Uri $favicon -UseBasicParsing -TimeoutSec 5 -OutFile $env:LAUNCHER_ICON_PATH
-"#;
-
-    run_powershell(
-        script,
-        &[("LAUNCHER_URL", url), ("LAUNCHER_ICON_PATH", &icon_path)],
-    )?;
-    payload_from_file(&path, "ico")
+    Ok(IconPayload {
+        format: detect_format(&bytes).unwrap_or("ico").to_string(),
+        data: STANDARD.encode(bytes),
+    })
 }
 
 /// Extracts the executable associated icon and returns base64 data for JSON storage.
@@ -302,5 +292,13 @@ mod tests {
         let uri = file_uri(Path::new(r"\\?\UNC\server\share\icon.png"));
 
         assert_eq!(uri, "file://server/share/icon.png");
+    }
+
+    #[test]
+    #[ignore = "需要外网，手动跑 cargo test -- --ignored"]
+    fn fetches_a_real_favicon() {
+        let icon = fetch_url_icon("https://www.baidu.com/").unwrap();
+
+        assert!(!icon.data.is_empty());
     }
 }
