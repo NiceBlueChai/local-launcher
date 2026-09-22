@@ -8,3 +8,6 @@
 /work/
 /.worktrees/
 
+
+# Local assistant tool output (credits report and canvas scratch files).
+/.qoder-credits/
